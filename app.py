@@ -601,6 +601,65 @@ if uploaded_file is not None:
             })
             
             chart = st.bar_chart(data.set_index('Group'))
+
+        # added
+        # In the breakdown analysis section, after displaying the existing charts
+if results.get('analysis_type') == 'all_values_comparison' and len(breakdown_columns) > 1:
+    st.subheader("Multi-Category Heatmap Analysis")
+    
+    # Let users select a second category to cross-analyze with
+    second_breakdown = st.selectbox(
+        "Select second category for heatmap:", 
+        [col for col in breakdown_columns if col != breakdown_column],
+        key="second_breakdown_selector"
+    )
+    
+    if second_breakdown:
+        # Get the currently selected signal value
+        selected_signal = st.session_state.selected_breakdown_signal
+        
+        # Filter data for the selected signal
+        signal_data = df[df[results['signal_column']] == selected_signal]
+        
+        # Create a pivot table for the heatmap
+        pivot_data = pd.pivot_table(
+            signal_data, 
+            values='metric_binary',  # Using the binary metric for the heatmap values
+            index=breakdown_column,
+            columns=second_breakdown,
+            aggfunc=np.mean
+        )
+        
+        # Show the heatmap
+        st.subheader(f"Heatmap of {results['metric_column']} Rate for Signal Value: {selected_signal}")
+        
+        # Create a heatmap using matplotlib
+        fig, ax = plt.subplots(figsize=(10, 8))
+        
+        # Create heatmap with color gradients
+        heatmap = ax.pcolor(pivot_data, cmap='Blues')
+        
+        # Set labels
+        ax.set_xticks(np.arange(pivot_data.shape[1]) + 0.5)
+        ax.set_yticks(np.arange(pivot_data.shape[0]) + 0.5)
+        ax.set_xticklabels(pivot_data.columns)
+        ax.set_yticklabels(pivot_data.index)
+        
+        # Rotate the x labels for better readability
+        plt.xticks(rotation=45, ha='right')
+        
+        # Add a color bar
+        cbar = plt.colorbar(heatmap)
+        cbar.set_label(f'{results["metric_column"]} Rate')
+        
+        # Show the plot
+        st.pyplot(fig)
+        
+        # Add some explanation
+        st.write("""
+        The heatmap shows the relationship between two categorical variables and how they 
+        jointly affect the metric rate. Darker blue indicates higher rates.
+        """)
         
         # Breakdown by category
         st.header("Breakdown Analysis")
