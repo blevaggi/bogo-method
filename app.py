@@ -1038,6 +1038,192 @@ with tab1:
             else:
                 st.info("No suitable columns found for breakdown analysis.")
 
+    if st.session_state.has_results:
+        results = st.session_state.signal_results
+        
+        
+        
+        # Check if results are not statistically significant
+        is_significant = False
+        
+        if results.get('analysis_type') == 'correlation':
+            is_significant = results.get('pearson_p_value', 1) < alpha
+        elif results.get('analysis_type') == 'all_values_comparison':
+            # For all values comparison, check if any value is significant
+            all_results = results.get('all_results', [])
+            is_significant = any(result.get('P-value', 1) < alpha for result in all_results)
+        else:
+            # Group comparison
+            is_significant = results.get('p_value', 1) < alpha
+        
+        # If results are not statistically significant, show sample size calculator
+        if not is_significant:
+            st.header("Sample Size Calculator")
+            st.info("Your analysis doesn't show statistical significance. Let's calculate how many more samples you might need.")
+            
+            # Calculate the current effect size
+            if results.get('analysis_type') == 'correlation':
+                # For correlation, use the observed correlation as effect size
+                observed_effect = abs(results.get('pearson_correlation', 0))
+                baseline_rate = results['df']['metric_binary'].mean()
+                
+                st.write(f"Current correlation: {observed_effect:.4f}")
+                st.write(f"Current baseline rate: {baseline_rate:.2%}")
+                
+                # UI for sample size calculation
+                min_effect = st.slider(
+                    "Minimum effect size to detect",
+                    min_value=max(0.01, observed_effect/2),
+                    max_value=max(0.5, observed_effect*2),
+                    value=observed_effect,
+                    step=0.01,
+                    format="%.2f",
+                    help="The correlation strength you want to detect"
+                )
+                
+            elif results.get('analysis_type') == 'all_values_comparison':
+                # Find the largest effect size in the current results
+                lift_values = [abs(result.get('Lift', 0)) for result in results.get('all_results', [])]
+                observed_effect = max(lift_values) if lift_values else 0.1
+                baseline_rate = results['df']['metric_binary'].mean()
+                
+                st.write(f"Current maximum lift: {observed_effect:.2%}")
+                st.write(f"Current baseline rate: {baseline_rate:.2%}")
+                
+                # UI for sample size calculation
+                min_effect = st.slider(
+                    "Minimum lift to detect",
+                    min_value=max(0.05, observed_effect/2),
+                    max_value=max(0.5, observed_effect*2),
+                    value=observed_effect,
+                    step=0.05,
+                    format="%.2f",
+                    help="The lift percentage you want to detect"
+                )
+                
+            else:
+                # Group comparison
+                observed_effect = abs(results.get('lift', 0))
+                baseline_rate = results.get('non_signal_conversion', 0.1)
+                
+                st.write(f"Current observed lift: {observed_effect:.2%}")
+                st.write(f"Current baseline rate: {baseline_rate:.2%}")
+                
+                # UI for sample size calculation
+                min_effect = st.slider(
+                    "Minimum lift to detect",
+                    min_value=max(0.05, observed_effect/2),
+                    max_value=max(0.5, observed_effect*2),
+                    value=observed_effect,
+                    step=0.05,
+                    format="%.2f",
+                    help="The lift percentage you want to detect"
+                )
+            
+            # Common UI elements for all analysis types
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                alpha_sample = st.select_slider(
+                    "Significance level (α)",
+                    options=[0.01, 0.05, 0.10],
+                    value=alpha,
+                    help="Probability of false positive (Type I error)"
+                )
+            
+            with col2:
+                power = st.select_slider(
+                    "Statistical power",
+                    options=[0.8, 0.9, 0.95],
+                    value=0.8,
+                    help="Probability of detecting the effect if it exists (1 - Type II error)"
+                )
+            
+            # Add the sample size calculation function
+            def calculate_required_sample_size(baseline_rate, minimum_detectable_effect, alpha=0.05, power=0.8):
+                """
+                Calculate the sample size needed to detect a minimum lift/drop with given statistical power.
+                """
+                # Ensure we have valid rates
+                baseline_rate = max(0.001, min(0.999, baseline_rate))
+                
+                # For correlation studies, convert correlation coefficient to an equivalent effect size
+                if results.get('analysis_type') == 'correlation':
+                    # Using approximate formula based on Cohen's d
+                    # For correlation studies we need a different approach
+                    z_alpha = stats.norm.ppf(1 - alpha/2)
+                    z_power = stats.norm.ppf(power)
+                    
+                    # Formula for required sample size to detect correlation
+                    sample_size = ((z_alpha + z_power) / np.arctanh(minimum_detectable_effect))**2 + 3
+                    return int(np.ceil(sample_size))
+                
+                # For proportion comparisons (group comparison or all values)
+                variation_rate = baseline_rate * (1 + minimum_detectable_effect)
+                variation_rate = max(0.001, min(0.999, variation_rate))
+                
+                # Z-scores for alpha and power
+                z_alpha = stats.norm.ppf(1 - alpha/2)
+                z_power = stats.norm.ppf(power)
+                
+                # Pooled proportion
+                p_pooled = (baseline_rate + variation_rate) / 2
+                
+                # Calculate sample size per group
+                sample_size = (
+                    ((z_alpha + z_power)**2) * 
+                    (baseline_rate * (1 - baseline_rate) + variation_rate * (1 - variation_rate)) / 
+                    (baseline_rate - variation_rate)**2
+                )
+                
+                return int(np.ceil(sample_size))
+            
+            # Button to trigger calculation
+            if st.button("Calculate Required Sample Size", key="sample_size_btn"):
+                total_current_samples = len(results['df'])
+                
+                required_samples = calculate_required_sample_size(
+                    baseline_rate=baseline_rate,
+                    minimum_detectable_effect=min_effect,
+                    alpha=alpha_sample,
+                    power=power
+                )
+                
+                if results.get('analysis_type') != 'correlation':
+                    # For group comparisons, we need samples in each group
+                    required_samples_total = required_samples * 2
+                    
+                    # Calculate additional samples needed
+                    additional_samples = max(0, required_samples_total - total_current_samples)
+                    
+                    # Display results
+                    st.success(f"You need approximately **{required_samples:,}** samples in each group.")
+                    st.write(f"Total samples required: **{required_samples_total:,}**")
+                    
+                    if additional_samples > 0:
+                        st.warning(f"You need **{additional_samples:,}** more samples in total to reach the required sample size.")
+                    else:
+                        st.success("You already have enough samples! Try adjusting your analysis parameters.")
+                else:
+                    # For correlation studies, total sample size is what matters
+                    additional_samples = max(0, required_samples - total_current_samples)
+                    
+                    # Display results
+                    st.success(f"You need approximately **{required_samples:,}** total samples.")
+                    
+                    if additional_samples > 0:
+                        st.warning(f"You need **{additional_samples:,}** more samples to reach the required sample size.")
+                    else:
+                        st.success("You already have enough samples! Try adjusting your analysis parameters.")
+                
+                # Explanation
+                st.info(f"""
+                **What this means:**
+                - With {required_samples:,} samples, you'd have a {power:.0%} chance of detecting a true effect of {min_effect:.2%} or larger.
+                - The significance level (α) of {alpha_sample:.0%} means there's a {alpha_sample:.0%} chance of a false positive.
+                - Your current sample size is {total_current_samples:,}.
+                """)
+
 with tab2:
     st.title("Comparative Analysis")
     st.subheader("Compare signals between control and variation datasets")
